@@ -53,6 +53,7 @@ include_directories(
 link_directories(
   ${CMAKE_BINARY_DIR}/emmc_helper_stubs
   ${CMAKE_BINARY_DIR}/emmc_helper_user_stubs
+  ${CMAKE_BINARY_DIR}/365_stubs
 )
 
 add_executable(${SHORT_NAME}
@@ -62,7 +63,8 @@ add_executable(${SHORT_NAME}
   src/sha256.c
 )
 
-add_dependencies(${SHORT_NAME} emmc_helper.skprx)
+add_dependencies(${SHORT_NAME} emmc_helper_365.skprx)
+add_dependencies(${SHORT_NAME} emmc_helper_360.skprx)
 
 target_link_libraries(${SHORT_NAME}
   SceDisplay_stub
@@ -81,16 +83,16 @@ target_link_libraries(${SHORT_NAME}
 
 vita_create_self(${SHORT_NAME}.self ${SHORT_NAME} UNSAFE)
 
-# emmc_helper: kernel version
-add_executable(emmc_helper
-  src/kernel.c
+# emmc_helper: kernel version 360
+add_executable(emmc_helper_360
+  src/kernel_360.c
   src/crc32.c
 )
-set_target_properties(emmc_helper
+set_target_properties(emmc_helper_360
   PROPERTIES LINK_FLAGS
   -nostdlib
 )
-target_link_libraries(emmc_helper
+target_link_libraries(emmc_helper_360
   k
   gcc
   SceThreadmgrForDriver_stub
@@ -102,11 +104,37 @@ target_link_libraries(emmc_helper
   SceSysmemForDriver_stub
   taihenForKernel_stub
 )
-vita_create_self(emmc_helper.skprx emmc_helper
+vita_create_self(emmc_helper_360.skprx emmc_helper_360
   CONFIG ${CMAKE_SOURCE_DIR}/src/kernel_exports.yml
   UNSAFE
 )
-vita_create_stubs(emmc_helper_stubs emmc_helper ${CMAKE_SOURCE_DIR}/src/kernel_exports.yml KERNEL)
+vita_create_stubs(emmc_helper_stubs emmc_helper_360 ${CMAKE_SOURCE_DIR}/src/kernel_exports.yml KERNEL)
+
+# emmc_helper: kernel version 365
+add_executable(emmc_helper_365
+  src/kernel_365.c
+  src/crc32.c
+)
+set_target_properties(emmc_helper_365
+  PROPERTIES LINK_FLAGS
+  -nostdlib
+)
+target_link_libraries(emmc_helper_365
+  k
+  gcc
+  SceThreadmgrForDriver_stub
+  SceModulemgrForDriver_stub
+  SceModulemgrForKernel_367_stub
+  SceSblAIMgrForDriver_stub
+  SceIofilemgrForDriver_stub
+  SceSysmemForKernel_stub
+  SceSysmemForDriver_stub
+  taihenForKernel_stub
+)
+vita_create_self(emmc_helper_365.skprx emmc_helper_365
+  CONFIG ${CMAKE_SOURCE_DIR}/src/kernel_exports.yml
+  UNSAFE
+)
 
 # second kernel helper to work around unloading a kernel module with exported funcs
 add_executable(kernel2
@@ -117,8 +145,12 @@ set_target_properties(kernel2
   -nostdlib
 )
 target_link_libraries(kernel2
+  k
   gcc
+  SceIofilemgrForDriver_stub
+  SceSysmemForDriver_stub
   taihenForKernel_stub
+  SceThreadmgrForDriver_stub
 )
 vita_create_self(kernel2.skprx kernel2
   CONFIG ${CMAKE_SOURCE_DIR}/src/kernel2.yml
@@ -146,14 +178,17 @@ vita_create_stubs(emmc_helper_user_stubs emmc_helper_user ${CMAKE_SOURCE_DIR}/sr
 add_dependencies(emmc_helper_user emmc_helper_stubs)
 add_dependencies(${SHORT_NAME} emmc_helper_user_stubs)
 add_dependencies(${SHORT_NAME} kernel2.skprx)
-add_dependencies(${SHORT_NAME} emmc_helper.skprx)
+add_dependencies(${SHORT_NAME} emmc_helper_360.skprx)
+add_dependencies(${SHORT_NAME} emmc_helper_365.skprx)
 add_dependencies(${SHORT_NAME} emmc_helper_user.suprx)
 
 vita_create_vpk(${SHORT_NAME}.vpk ${VITA_TITLEID} ${SHORT_NAME}.self
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
-  FILE ${CMAKE_SOURCE_DIR}/res/fat.bin fat.bin
-  FILE ${CMAKE_BINARY_DIR}/emmc_helper.skprx emmc_helper.skprx
+  FILE ${CMAKE_SOURCE_DIR}/res/fat_360.bin oldfw/fat.bin
+  FILE ${CMAKE_SOURCE_DIR}/res/fat_365.bin gudfw/fat.bin
+  FILE ${CMAKE_BINARY_DIR}/emmc_helper_360.skprx oldfw/emmc_helper.skprx
+  FILE ${CMAKE_BINARY_DIR}/emmc_helper_365.skprx gudfw/emmc_helper.skprx
   FILE ${CMAKE_BINARY_DIR}/emmc_helper_user.suprx emmc_helper.suprx
   FILE ${CMAKE_BINARY_DIR}/kernel2.skprx kernel2.skprx
   FILE ${CMAKE_SOURCE_DIR}/res/icon.png sce_sys/icon0.png

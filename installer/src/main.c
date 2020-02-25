@@ -26,6 +26,7 @@
 int _vshSblAimgrGetConsoleId(char cid[32]);
 int sceSblSsUpdateMgrSetBootMode(int x);
 int vshPowerRequestColdReset(void);
+int curfw = 69;
 
 enum {
 	SCREEN_WIDTH = 960,
@@ -51,6 +52,16 @@ static unsigned buttons[] = {
 };
 
 const char check_cid[16] = BUILD_CID;
+
+int ex(const char *fname) {
+    FILE *file;
+    if ((file = fopen(fname, "r")))
+    {
+        fclose(file);
+        return 1;
+    }
+    return 0;
+}
 
 uint32_t get_key(void) {
 	static unsigned prev = 0;
@@ -97,8 +108,21 @@ int load_helper(void) {
 		return -1;
 	}
 
-	if ((ret = g_kernel_module = taiLoadStartKernelModuleForUser(APP_PATH "emmc_helper.skprx", &args)) < 0) {
-		printf("Failed to load kernel module: 0x%08x\n", ret);
+	if (ex("ur0:temp/365.t") == 1) {
+		sceIoRemove("ur0:temp/365.t");
+		if ((ret = g_kernel_module = taiLoadStartKernelModuleForUser(APP_PATH "gudfw/emmc_helper.skprx", &args)) < 0) {
+			printf("Failed to load kernel module: 0x%08x\n", ret);
+			return -1;
+		} 
+	} else if (ex("ur0:temp/360.t") == 1) {
+		curfw = 34;
+		sceIoRemove("ur0:temp/360.t");
+		if ((ret = g_kernel_module = taiLoadStartKernelModuleForUser(APP_PATH "oldfw/emmc_helper.skprx", &args)) < 0) {
+			printf("Failed to load kernel module: 0x%08x\n", ret);
+			return -1;
+		}
+	} else {
+		printf("Failed to get fw version, please disable all the plugins and try again\n", ret);
 		return -1;
 	}
 
@@ -184,285 +208,6 @@ void draw_rect(int x, int y, int width, int height, uint32_t color) {
 			((uint32_t*)base)[j * LINE_SIZE + i] = color;
 }
 
-int g_tpl;
-
-int download_file(const char *src, const char *dst, uint8_t *expect_hash) {
-	int ret;
-
-	int conn = sceHttpCreateConnectionWithURL(g_tpl, src, 0);
-	if (conn < 0) {
-		printf("sceHttpCreateConnectionWithURL: 0x%x\n", conn);
-		return conn;
-	}
-	int req = sceHttpCreateRequestWithURL(conn, 0, src, 0);
-	if (req < 0) {
-		printf("sceHttpCreateRequestWithURL: 0x%x\n", req);
-		sceHttpDeleteConnection(conn);
-		return req;
-	}
-	ret = sceHttpSendRequest(req, NULL, 0);
-	if (ret < 0) {
-		printf("sceHttpSendRequest: 0x%x\n", ret);
-		goto end;
-	}
-	static unsigned char buf[4096];
-
-	uint64_t length = 0;
-	ret = sceHttpGetResponseContentLength(req, &length);
-
-	int fd = sceIoOpen(dst, SCE_O_TRUNC | SCE_O_CREAT | SCE_O_WRONLY, 6);
-	int total_read = 0;
-	if (fd < 0) {
-		printf("sceIoOpen: 0x%x\n", fd);
-		ret = fd;
-		goto end;
-	}
-
-	SHA256_CTX ctx = {0};
-	sha256_init(&ctx);
-
-	// draw progress bar background
-	draw_rect(0, SCREEN_HEIGHT - PROGRESS_BAR_HEIGHT, PROGRESS_BAR_WIDTH, PROGRESS_BAR_HEIGHT, 0xFF666666);
-	while (1) {
-		int read = sceHttpReadData(req, buf, sizeof(buf));
-		if (read < 0) {
-			printf("sceHttpReadData error! 0x%x\n", read);
-			ret = read;
-			goto end2;
-		}
-		if (read == 0)
-			break;
-		ret = sceIoWrite(fd, buf, read);
-		if (ret < 0 || ret != read) {
-			printf("sceIoWrite error! 0x%x\n", ret);
-			goto end2;
-		}
-		sha256_update(&ctx, buf, read);
-		total_read += read;
-		draw_rect(1, SCREEN_HEIGHT - PROGRESS_BAR_HEIGHT + 1, ((uint64_t)(PROGRESS_BAR_WIDTH - 2)) * total_read / length, PROGRESS_BAR_HEIGHT - 2, 0xFFFFFFFF);
-	}
-
-	uint8_t hash[32] = {0};
-	sha256_final(&ctx, hash);
-	if (memcmp(hash, expect_hash, sizeof(hash)) != 0) {
-		printf("the file got corrupted in transit\n");
-		ret = -1;
-	} else {
-		ret = 0;
-	}
-
-end2:
-	sceIoClose(fd);
-end:
-	sceHttpDeleteRequest(req);
-	sceHttpDeleteConnection(conn);
-
-	return ret;
-}
-
-int init_net(void) {
-	SceNetInitParam netInitParam;
-	int ret;
-	void *base;
-
-	ret = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_NET);
-	if (ret < 0) {
-		printf("SCE_SYSMODULE_PROMOTER_UTIL(SCE_SYSMODULE_NET): %x\n", ret);
-		return -1;
-	}
-
-	ret = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_HTTP);
-	if (ret < 0) {
-		printf("SCE_SYSMODULE_PROMOTER_UTIL(SCE_SYSMODULE_HTTP): %x\n", ret);
-		return -1;
-	}
-
-	ret = sceHttpInit(1*1024*1024);
-	if (ret < 0) {
-		printf("sceHttpInit(): %x\n", ret);
-		return -1;
-	}
-
-	int block = sceKernelAllocMemBlock("net", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, 1*1024*1024, NULL);
-	if (block < 0) {
-		printf("failed to allocate net block: 0x%08x\n", block);
-		return -1;
-	}
-	ret = sceKernelGetMemBlockBase(block, &base);
-
-	netInitParam.memory = base;
-	netInitParam.size = 1*1024*1024;
-	netInitParam.flags = 0;
-	ret = sceNetInit(&netInitParam);
-	if (ret < 0) {
-		printf("sceNetInit(): %x\n", ret);
-		return -1;		
-	}
-
-	ret = sceNetCtlInit();
-	if (ret < 0) {
-		printf("sceNetCtlInit(): %x\n", ret);
-		return -1;
-	}
-
-	g_tpl = sceHttpCreateTemplate("enso installer", 2, 1);
-	if (g_tpl < 0) {
-		printf("sceHttpCreateTemplate: 0x%x\n", g_tpl);
-		return -1;		
-	}
-	sceHttpSetAutoRedirect(g_tpl, 1);
-
-	return 0;
-}
-
-int extract(const char *pup, const char *psp2swu) {
-	int inf, outf;
-
-	if ((inf = sceIoOpen(pup, SCE_O_RDONLY, 0)) < 0) {
-		return -1;
-	}
-
-	if ((outf = sceIoOpen(psp2swu, SCE_O_CREAT | SCE_O_WRONLY | SCE_O_TRUNC, 6)) < 0) {
-		return -1;
-	}
-
-	int ret = -1;
-	int count;
-
-	if (sceIoLseek(inf, 0x18, SCE_SEEK_SET) < 0) {
-		goto end;
-	}
-
-	if (sceIoRead(inf, &count, 4) < 4) {
-		goto end;
-	}
-
-	if (sceIoLseek(inf, 0x80, SCE_SEEK_SET) < 0) {
-		goto end;
-	}
-
-	struct {
-		uint64_t id;
-		uint64_t off;
-		uint64_t len;
-		uint64_t field_18;
-	} __attribute__((packed)) file_entry;
-
-	for (int i = 0; i < count; i++) {
-
-		if (sceIoRead(inf, &file_entry, sizeof(file_entry)) != sizeof(file_entry)) {
-			goto end;
-		}
-
-		if (file_entry.id == 0x200) {
-			break;
-		}
-	}
-
-	if (file_entry.id == 0x200) {
-		char buffer[1024];
-		size_t rd;
-
-		if (sceIoLseek(inf, file_entry.off, SCE_SEEK_SET) < 0) {
-			goto end;
-		}
-
-		while (file_entry.len && (rd = sceIoRead(inf, buffer, sizeof(buffer))) > 0) {
-			if (rd > file_entry.len) {
-				rd = file_entry.len;
-			}
-			sceIoWrite(outf, buffer, rd);
-			file_entry.len -= rd;
-		}
-
-		if (file_entry.len == 0) {
-			ret = 0;
-		}
-	}
-
-end:
-	sceIoClose(inf);
-	sceIoClose(outf);
-	return ret;
-}
-
-int reinstall_firmware(void) {
-	int ret = 0;
-
-	stop_helper();
-	unlock_system();
-	sceKernelPowerLock(0); // don't want the screen to turn off during download
-
-	ret = init_net();
-	if (ret < 0) {
-		printf("failed to init network functions\n");
-		goto cleanup;
-	}
-
-	// delete old update files
-	const char *files[] = {
-		"ud0:PSP2UPDATE/PSP2UPDAT.PUP",
-		"ud0:PSP2UPDATE/PSP2UPDAT.PUP_",
-		"ud0:PSP2UPDATE/psp2swu.self",
-		"ud0:PSP2UPDATE/psp2swu.self_"
-	};
-	for (size_t i = 0; i < ARRAYSIZE(files); ++i)
-		sceIoRemove(files[i]);
-	for (size_t i = 0; i < ARRAYSIZE(files); ++i) {
-		int fd = sceIoOpen(files[i], SCE_O_RDONLY, 0);
-		if (fd != (int)0x80010002) {
-			printf("failed to clean up old files: 0x%08x\n", fd);
-			return -1;
-		}
-	}
-
-	// make sure directory is present
-	sceIoMkdir("ud0:PSP2UPDATE", 0777);
-
-	uint8_t psp2updat_hash[] = { 0x8c, 0xc2, 0xe2, 0x66, 0x66, 0x26, 0xc4, 0xff, 0x8f, 0x58, 0x2b, 0xf2, 0x09, 0x47, 0x35, 0x26,
-		0xe8, 0x25, 0xe2, 0xa5, 0xe3, 0x8e, 0x39, 0xb2, 0x59, 0xa8, 0xa4, 0x6e, 0x25, 0xef, 0x37, 0x1c };
-
-	printf("Downloading PSP2UPDAT.PUP...\n");
-	if (download_file("http://update.henkaku.xyz/update/PSP2UPDAT.FULL.360.PUP",
-			"ud0:PSP2UPDATE/PSP2UPDAT.PUP_", psp2updat_hash) < 0) {
-		printf("Failed to download update file.\n");
-		ret = -1;
-		goto cleanup;
-	}
-
-	printf("Extracting updater...\n");
-	extract("ud0:PSP2UPDATE/PSP2UPDAT.PUP_", "ud0:PSP2UPDATE/psp2swu.self_");
-
-	if ((ret = sceIoRename("ud0:PSP2UPDATE/PSP2UPDAT.PUP_", "ud0:PSP2UPDATE/PSP2UPDAT.PUP")) < 0) {
-		printf("failed to rename PSP2UPDAT: 0x%08x\n", ret);
-		ret = -1;
-		goto cleanup;
-	}
-	if ((ret = sceIoRename("ud0:PSP2UPDATE/psp2swu.self_", "ud0:PSP2UPDATE/psp2swu.self")) < 0) {
-		printf("failed to rename psp2swu: 0x%08x\n", ret);
-		ret = -1;
-		goto cleanup;
-	}
-
-	sceIoSync("ud0:", 0);
-	sceIoSync("ud0:PSP2UPDATE/PSP2UPDAT.PUP", 0);
-	sceIoSync("ud0:PSP2UPDATE/psp2swu.self", 0);
-
-	printf("Rebooting to update in 5 seconds...\n");
-	printf("Close this app now if you changed your mind.\n");
-	sceKernelPowerUnlock(0);
-
-	sceKernelDelayThread(5 * 1000 * 1000);
-
-	sceSblSsUpdateMgrSetBootMode(48);
-	vshPowerRequestColdReset();
-
-	ret = 0;
-
-cleanup:
-	return ret;
-}
-
 int do_install(void) {
 	int ret = 0;
 
@@ -481,16 +226,7 @@ int do_install(void) {
 	ret = ensoCheckOs0();
 	if (ret < 0) {
 		printf("failed\n");
-		printf("\nos0 modifications detected.\nYou should reinstall 3.60 and try again.\n");
-
-		printf("Press X to download and install 3.60 PUP, any other key to exit.\n");
-		if (get_key() == SCE_CTRL_CROSS) {
-			if (reinstall_firmware() < 0) {
-				printf("failed to trigger a reinstall\n");
-				ret = -1;
-			}
-		}
-
+		printf("\nos0 modifications detected.\nYou should reinstall the firmware and try again.\n");
 		goto err;
 	}
 	printf("ok!\n");
@@ -655,7 +391,7 @@ int main(int argc, char *argv[]) {
 		return 0;
 	}
 
-	printf("Built On: %s\n\n", BUILD_DATE);
+	printf("Built On: %s by SKGleba\n\n", BUILD_DATE);
 
 	if (check_safe_mode()) {
 		printf("Please disable HENkaku Safe Mode from Settings before running this installer.\n\n");

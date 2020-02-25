@@ -6,8 +6,11 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 #include <inttypes.h>
-#include "nsbl.h"
-#include "logo.h"
+#ifdef FW_360
+	#include "360/nsbl.h"
+#else
+	#include "365/nsbl.h"
+#endif
 
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 
@@ -46,14 +49,9 @@ do {                                   \
 } while (0)
 
 // sdstor restore globals
-static int (*sdstor_read_sector_async)(void* ctx, int sector, char* buffer, int nSectors) = NULL;
-static int (*sdstor_read_sector)(void* ctx, int sector, char* buffer, int nSectors) = NULL;
+static int (*sdif_read_sector_mmc)(void* ctx, int sector, char* buffer, int nSectors) = NULL;
+static int (*sdif_read_sector_sd)(void* ctx, int sector, char* buffer, int nSectors) = NULL;
 static void *(*get_sd_context_part_validate_mmc)(int sd_ctx_index) = NULL;
-
-// debug globals
-#ifdef DEBUG
-static int (*set_crash_flag)(int) = NULL;
-#endif
 
 // sigpatch globals
 static int g_sigpatch_disabled = 0;
@@ -66,20 +64,6 @@ static int (*sbl_decrypt)(uint32_t ctx, void *buf, int sz) = NULL;
 static void __attribute__((noreturn)) (*sysstate_final)(void) = NULL;
 
 // utility functions
-
-#if 0
-static int hex_dump(const char *addr, unsigned int size)
-{
-    unsigned int i;
-    for (i = 0; i < (size >> 4); i++)
-    {
-        printf("0x%08X: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n", addr, addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7], addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15]);
-        addr += 0x10;
-    }
-    return 0;
-}
-#endif
-
 static void **get_export_func(SceModuleObject *mod, uint32_t lib_nid, uint32_t func_nid) {
     for (SceModuleExports *ent = mod->ent_top_user; ent != mod->ent_end_user; ent++) {
         if (ent->lib_nid == lib_nid) {
@@ -136,42 +120,38 @@ static inline int skip_patches(void) {
 
 // sdif patches for MBR redirection
 
-static int sdstor_read_sector_patched(void* ctx, int sector, char* buffer, int nSectors) {
+static int sdif_read_sector_sd_patched(void* ctx, int sector, char* buffer, int nSectors) {
     int ret;
 #ifndef NO_MBR_REDIRECT
     if (unlikely(sector == 0 && nSectors > 0)) {
-        printf("read sector 0 for %d at context 0x%08X\n", nSectors, ctx);
-        if (get_sd_context_part_validate_mmc(0) == ctx) {
-            printf("patching sector 0 read to sector 1\n");
-            ret = sdstor_read_sector(ctx, 1, buffer, 1);
+        if (get_sd_context_part_validate_mmc(0) == ctx) { // check if SD == MMC; no questions
+            ret = sdif_read_sector_sd(ctx, 1, buffer, 1);
             if (ret >= 0 && nSectors > 1) {
-                ret = sdstor_read_sector(ctx, 1, buffer + 0x200, nSectors-1);
+                ret = sdif_read_sector_sd(ctx, 1, buffer + 0x200, nSectors-1);
             }
             return ret;
         }
     }
 #endif
 
-    return sdstor_read_sector(ctx, sector, buffer, nSectors);
+    return sdif_read_sector_sd(ctx, sector, buffer, nSectors);
 }
 
-static int sdstor_read_sector_async_patched(void* ctx, int sector, char* buffer, int nSectors) {
+static int sdif_read_sector_mmc_patched(void* ctx, int sector, char* buffer, int nSectors) {
     int ret;
 #ifndef NO_MBR_REDIRECT
     if (unlikely(sector == 0 && nSectors > 0)) {
-        printf("read sector async 0 for %d at context 0x%08X\n", nSectors, ctx);
         if (get_sd_context_part_validate_mmc(0) == ctx) {
-            printf("patching sector 0 read to sector 1\n");
-            ret = sdstor_read_sector_async(ctx, 1, buffer, 1);
+            ret = sdif_read_sector_mmc(ctx, 1, buffer, 1);
             if (ret >= 0 && nSectors > 1) {
-                ret = sdstor_read_sector_async(ctx, 1, buffer + 0x200, nSectors-1);
+                ret = sdif_read_sector_mmc(ctx, 1, buffer + 0x200, nSectors-1);
             }
             return ret;
         }
     }
 #endif
 
-    return sdstor_read_sector_async(ctx, sector, buffer, nSectors);
+    return sdif_read_sector_mmc(ctx, sector, buffer, nSectors);
 }
 
 // sigpatches for bootup
@@ -209,12 +189,9 @@ static int sbl_decrypt_patched(uint32_t ctx, void *buf, int sz) {
 }
 
 static void __attribute__((noreturn)) sysstate_final_hook(void) {
-    printf("after kernel load! disabling temporary sigpatches\n");
-
     DACR_OFF(
         g_sigpatch_disabled = 1;
     );
-
     sysstate_final();
 }
 
@@ -222,7 +199,6 @@ static void __attribute__((noreturn)) sysstate_final_hook(void) {
 
 #define HOOK_EXPORT(name, lib_nid, func_nid) do {           \
     void **func = get_export_func(mod, lib_nid, func_nid);  \
-    printf(#name ": 0x%08X\n", *func);                      \
     DACR_OFF(                                               \
         name = *func;                                       \
         *func = name ## _patched;                           \
@@ -230,7 +206,6 @@ static void __attribute__((noreturn)) sysstate_final_hook(void) {
 } while (0)
 #define FIND_EXPORT(name, lib_nid, func_nid) do {           \
     void **func = get_export_func(mod, lib_nid, func_nid);  \
-    printf(#name ": 0x%08X\n", *func);                      \
     DACR_OFF(                                               \
         name = *func;                                       \
     );                                                      \
@@ -240,67 +215,32 @@ static int module_load_patched(const SceModuleLoadList *list, int *uids, int cou
     SceObject *obj;
     SceModuleObject *mod;
     int skip;
-    int sysmem_idx = -1, display_idx = -1, sdif_idx = -1, authmgr_idx = -1, sysstate_idx = -1;
+    int sysmem_idx = -1, sdif_idx = -1, authmgr_idx = -1, sysstate_idx = -1;
 
     skip = skip_patches();
     for (int i = 0; i < count; i++) {
         if (!list[i].filename) {
             continue; // wtf sony why don't you sanitize input
         }
-        printf("before start %s\n", list[i].filename);
-        if (!skip && strncmp(list[i].filename, "display.skprx", 13) == 0) {
-            display_idx = i;
-        } else if (strncmp(list[i].filename, "sdif.skprx", 10) == 0) {
+        if (strncmp(list[i].filename, "sdif.skprx", 10) == 0) {
             sdif_idx = i; // never skip MBR redirection patches
         } else if (!skip && strncmp(list[i].filename, "authmgr.skprx", 13) == 0) {
             authmgr_idx = i;
         } else if (!skip && strncmp(list[i].filename, "sysstatemgr.skprx", 17) == 0) {
             sysstate_idx = i;
         }
-#ifdef DEBUG
-        if (strncmp(list[i].filename, "sysmem.skprx", 12) == 0) {
-            sysmem_idx = i;
-        }
-#endif
     }
+	
     ret = module_load(list, uids, count, unk);
-#ifdef DEBUG
-    // get sysmem functions
-    if (sysmem_idx >= 0) {
-        obj = get_obj_for_uid(uids[sysmem_idx]);
-        if (obj != NULL) {
-            mod = (SceModuleObject *)&obj->data;
-            FIND_EXPORT(set_crash_flag, 0x88C17370, 0xF857CDD6);
-            FIND_EXPORT(printf, 0x88758561, 0x391B74B7);
-        } else {
-            printf("module data invalid for sysmem.skprx!\n");
-        }
-    }
-#endif
-    // patch logo
-    if (display_idx >= 0) {
-        obj = get_obj_for_uid(uids[display_idx]);
-        if (obj != NULL) {
-            mod = (SceModuleObject *)&obj->data;
-            printf("logo at offset: %x\n", mod->segments[0].buf + SCEDISPLAY_LOGO_OFFSET);
-            DACR_OFF(
-                memcpy(mod->segments[0].buf + SCEDISPLAY_LOGO_OFFSET, logo_data, logo_len);
-            );
-            // no cache flush needed because this is just data
-        } else {
-            printf("module data invalid for display.skprx!\n");
-        }
-    }
+
     // patch sdif
     if (sdif_idx >= 0) {
         obj = get_obj_for_uid(uids[sdif_idx]);
         if (obj != NULL) {
             mod = (SceModuleObject *)&obj->data;
-            HOOK_EXPORT(sdstor_read_sector_async, 0x96D306FA, 0x6F8D529B);
-            HOOK_EXPORT(sdstor_read_sector, 0x96D306FA, 0xB9593652);
+            HOOK_EXPORT(sdif_read_sector_mmc, 0x96D306FA, 0x6F8D529B);
+            HOOK_EXPORT(sdif_read_sector_sd, 0x96D306FA, 0xB9593652);
             FIND_EXPORT(get_sd_context_part_validate_mmc, 0x96D306FA, 0x6A71987F);
-        } else {
-            printf("module data invalid for sdif.skprx!\n");
         }
     }
     // patch authmgr
@@ -311,8 +251,6 @@ static int module_load_patched(const SceModuleLoadList *list, int *uids, int cou
             HOOK_EXPORT(sbl_parse_header, 0x7ABF5135, 0xF3411881);
             HOOK_EXPORT(sbl_set_up_buffer, 0x7ABF5135, 0x89CCDA2C);
             HOOK_EXPORT(sbl_decrypt, 0x7ABF5135, 0xBC422443);
-        } else {
-            printf("module data invalid for authmgr.skprx!\n");
         }
     }
     // patch sysstate to load unsigned boot configs
@@ -330,8 +268,6 @@ static int module_load_patched(const SceModuleLoadList *list, int *uids, int cou
                 INSTALL_HOOK_THUMB(sysstate_final_hook, mod->segments[0].buf + SYSSTATE_FINAL_CALL);
                 sysstate_final = mod->segments[0].buf + SYSSTATE_FINAL;
             );
-        } else {
-            printf("module data invalid for sysstatemgr.skprx!\n");
         }
     }
     return ret;
@@ -340,11 +276,8 @@ static int module_load_patched(const SceModuleLoadList *list, int *uids, int cou
 #undef FIND_EXPORT
 
 void go(void) {
-    printf("second\n");
-
     // patch module_load/module_start
     *module_load_func_ptr = module_load_patched;
-    printf("module_load_patched: 0x%08X\n", module_load_patched);
 }
 
 __attribute__ ((section (".text.start"))) void start(void) {

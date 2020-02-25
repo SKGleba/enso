@@ -248,11 +248,6 @@ typedef struct SceModuleDecryptContext {
 } __attribute__((packed)) SceModuleDecryptContext;
 
 // firmware specific function offsets
-#ifdef DEBUG
-static int (*printf)(const char *fmt, ...) = (void*)0x510137A9;
-#else
-#define printf(...)
-#endif
 static void *(*memset)(void *dst, int ch, int sz) = (void*)0x51013AD1;
 static void *(*memcpy)(void *dst, const void *src, int sz) = (void *)0x51013A51;
 static void *(*memmove)(void *dst, const void *src, int sz) = (void *)0x51021325;
@@ -273,7 +268,6 @@ static SceSysrootContext **sysroot_ctx_ptr = (void *)0x51138A3C;
 static void **module_load_func_ptr = (void *)0x51027630;
 
 // sysstate patches
-#define SCEDISPLAY_LOGO_OFFSET (0x8990)
 #define SBLAUTHMGR_OFFSET_PATCH_ARG (168)
 #define SYSSTATE_IS_MANUFACTURING_MODE_OFFSET (0x1500)
 #define SYSSTATE_IS_DEV_MODE_OFFSET (0xE28)
